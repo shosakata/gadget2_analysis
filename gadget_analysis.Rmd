@@ -1,0 +1,448 @@
+---
+title: "Gadget2 Analysis"
+output:
+  pdf_document: default
+---
+
+# Setup
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message=FALSE, warning = FALSE)
+```
+
+```{r }
+#Load the required packages
+library(tidyverse)
+library(tidymodels)
+pacman::p_load(modelr)
+pacman::p_load(car)
+```
+
+# Q1. Loading the data
+
+```{r}
+# My student number goes here
+ysn = 1908447
+# Calculate my student number modulo 3
+filenum <- (ysn + 2) %% 3
+filenum
+
+filename <- paste0("./data/survey_",filenum,".csv")
+filename
+
+# Read in the data
+survey <- read_csv(filename)
+# survey <- as_tibble(survey)
+# Display the first 10 lines of the data
+print(n=10,survey)
+```
+
+# Q2. Identify what types of variables we now have
+* recommend: Categorical Nominal
+  - The "recommend" column is a feature that indicates whether a recommendation has been made or not, with a binary flag, and the values do not represent any order.
+
+* age: Quantitative Continuous
+  - The model created in this project accept the decimal values for "age". Therefore "age" is treated as decimal variable.
+
+* company_aware: Categorical Nominal
+  - The "company_aware" column contains TRUE or FALSE values, which are unordered categorical values.
+  
+* malfunction: Categorical Nominal
+  - The "malfunction" column contains TRUE or FALSE values, which are unordered categorical values.
+
+* multi_purch: Categorical Nominal
+  - The "multi_purch" column contains TRUE or FALSE values, which are unordered categorical values.
+
+* SES: Categorical Ordinal
+  - The "malfunction" column contains "low","mid" and "high", which are ordered categorical values.
+
+* social_media: Categorical Nominal
+  - The "social_media" column contains TRUE or FALSE values, which are unordered categorical values.
+
+# Q3. Tame data
+
+## Make sure that all column names are in snake case
+```{r}
+# The snake case is a notation that connects lowercase words with an underscore.
+# SES is in upper case, so it should be converted to lower case.
+survey3_1 <- rename(survey,ses=SES)
+```
+
+## Make the variables age, company_aware, malfunction, multi_purch and social_media conform to tame data
+```{r}
+print(n=10,survey)
+```
+
+The all columns, except for the "recommend" and "ses", meet the criteria for tame data. 
+
+## Convert recommend to a fctor data type, with yes for 1 and no for 0.
+```{r}
+survey3_2<-survey3_1
+survey3_2$recommend <- survey3_2$recommend %>%
+  as.factor() %>%
+  fct_recode("yes" = "1", "no"="0")
+
+```
+## Convert the Socio-Economic Status to a fctor.
+```{r}
+survey3_3 <- survey3_2 %>%
+  mutate(ses=factor(ses))
+
+# Output the first 10 lines
+print(n=10,survey3_3)
+```
+
+
+
+# Q4. Split data into a training set
+
+```{r}
+# Set the seed
+set.seed(ysn)
+survey4 <- survey3_3
+
+# Split data into a training set
+survey_split <- initial_split( survey4, prop=4/5 ) # Create our split object
+survey_train <- training( survey_split ) # Get our training sets
+survey_test <- testing( survey_split ) # Get our testing sets
+
+# Output the dimensions of our training and testing sets
+dim(survey_train)
+dim(survey_test)
+```
+# Q5. Fit a logistic regression model to training data
+```{r}
+lr_spec <- logistic_reg(mode = "classification") %>%
+  set_engine("glm")
+survey_lr <- lr_spec %>%
+  fit(recommend    ~ ., data = survey_train)
+
+# Output the summary of the model
+summary(survey_lr$fit)
+```
+# Q6. See what happens to ses when a model is fitted
+## Q6(a). How many new variables have been introduced?
+```{r}
+model_matrix(survey_train,~ses)
+```
+The "ses" is decomposed into "seslow"("low"), "sesmid"("mid") and "intercept". In the model, <b>two</b> variables, "seslow" and "sesmid", are introduced.
+
+## Q6(b). What is the reference level for ses?
+high("seshigh")
+
+
+# Q7(a). Build a new tibble called ses matrix
+```{r}
+ses_matrix <- survey_train$ses %>%
+  cbind(select(model_matrix(survey_train,~ses),seslow,sesmid)) %>%
+  as.tibble()
+ses_matrix <- rename(ses_matrix, ses=.)
+ses_matrix
+```
+
+# Q7(b). Write down the coordinates of the ses levels
+* high: (0, 0)
+* mid: (0, 1)
+* low: (1, 0)
+
+# Q8. How many lines are described by the model in Q5?
+
+The categorical predictors used by the model in Q5 are as follows:
+
+* company_aware
+* malfunction
+* multi_purch
+* seslow
+* sesmid
+* social_media
+
+"company_aware", "malfunction", "multi_purch", and "social_media" have binary values, while "seslow" and "sesmid" are based on SES, thus resulting in three possible combinations of values, "low", "mid" and "high". Therefore, the number of lines is $2^4 \times 3 = 48$.
+
+# Q9. Fit a model to training set using all the individual variables and all the second-order interaction terms
+```{r}
+# Fit a model to training set
+survey_interact_lr <- lr_spec %>%
+  fit(recommend    ~ .^2, data = survey_train)
+
+# Find the p-values for each of the variables
+Anova(survey_interact_lr$fit)
+
+```
+The following interaction terms meet the 99.9% significance level.
+
+* age:malfunction
+
+* multi_purch:ses
+
+# Q10. Apply backwards stepwise regression
+## Q10(a). Fit a new model with just the individual variables and the significant interactions terms
+```{r}
+survey_lr_10a <- lr_spec %>%
+  fit(recommend    ~ . + age:malfunction + multi_purch:ses, data = survey_train)
+
+# Show the Anova() output.
+Anova(survey_lr_10a$fit)
+```
+## Q10(b). Find a model where all terms meet the 95% significance level
+```{r}
+# Exclude the "company_aware", which has the highest p-value and does not meet 95% significance level
+survey_lr_10b_1 <- lr_spec %>%
+  fit(recommend    ~ age + malfunction + multi_purch + ses + social_media + 
+        age:malfunction + multi_purch:ses, data = survey_train)
+
+Anova(survey_lr_10b_1$fit)
+```
+```{r}
+# Exclude the "social_media", which has the highest p-value and does not meet 95% significance level
+survey_lr_10b_2 <- lr_spec %>%
+  fit(recommend    ~ age +  malfunction + multi_purch + ses + 
+        age:malfunction + multi_purch:ses, data = survey_train)
+
+Anova(survey_lr_10b_2$fit)
+```
+All terms meet the 95% significance level now.
+
+# Q11. The significant interaction terms
+## Q11(a). Which interaction terms are significant in the final model?
+According to the result of Q10(b), the following terms are significant interaction terms.
+
+* age:malfunction
+
+* multi_purch:ses
+
+## Q11(b). Provide some reasonable hypotheses for why those interaction terms might represent real effects
+
+* age:malfunction
+
+```{r}
+survey_agg1 <- select(survey_train,age,malfunction)
+
+survey_agg1<- survey_agg1 %>%
+  mutate(age_10 = as.integer(paste0(str_replace(age,"\\d$",""), "0")),
+         malfunction_flg = as.integer(ifelse(malfunction==TRUE, 1 ,0)) )
+
+# The probability of malfunction per age group
+survey_agg1 %>%
+  group_by(age_10) %>%
+  summarise(probability_malfunction=mean(malfunction_flg))
+  
+# The number of data points per age group
+count(survey_agg1,age_10)
+
+```
+Teenagers have fewer malfunctions, and there is a partial dependence between age and malfunctions. It can be presumed that the malfunction of teenagers is less likely to occur since fewer years have passed since the purchase of the gadget. On the other hand, the malfunction rate is particularly high in the 80s compared to other age groups. However, data points for individuals in their 80s are insufficient. Therefore, the malfunction rate of the 80s may be more susceptible to errors.
+
+* multi_purch:ses
+
+```{r}
+survey_agg2 <- select(survey_train,multi_purch,ses)
+survey_agg2 <- survey_agg2 %>%
+  mutate(multi_purch_flg = as.integer(ifelse(multi_purch==TRUE, 1 ,0)) )
+
+# The probability of multiple purchases per SES
+survey_agg2 %>%
+  group_by(ses) %>%
+  summarise(probability_multi_purch = mean(multi_purch_flg))
+
+# The number of data points per SES
+count(survey_agg2,ses)
+```
+People who have a low Socio-Economic status tend to make multiple purchases compared to middle and high status, indicating a dependency between "multi_purch" and "ses". It can be speculated that people with a low Socio-Economic status may purchase multiple Gadgets, which are perceived as cool accessories, to maintain appearances. In contrast, individuals with mid or high status may not feel the need to show off. Therefore people with mid or high may not make multiple purchases.
+
+
+# Q12. Write down the general form of $\hat{f}_i$ for your final model in Question 10.
+```{r}
+summary(survey_lr_10b_2$fit)
+```
+
+$$
+ \hat{f}_i = \hat\beta_0 + \hat\beta_1  x_\text{i1} + \hat\beta_2 x_\text{i2} + \hat\beta_3 x_\text{i3} + \hat\beta_4 x_\text{i4} + \hat\beta_5 x_\text{i5} + \hat\beta_6 x_\text{i1} x_\text{i2} + \hat\beta_7 x_\text{i3} x_\text{i4} + \hat\beta_8 x_\text{i3} x_\text{i5}
+$$
+
+* $\hat{f}_i$: Estimated function of the predictors
+
+* $x_\text{i1}$: "age"
+* $x_\text{i2}$(malfunctionTRUE): If "malfunction" is TRUE, $x_\text{i2}$ is equal to 1. Otherwise , $x_\text{i2}$ is equal to 0.
+* $x_\text{i3}$(multi_purchTRUE): If "multi_purch" is TRUE, $x_\text{i3}$ is equal to 1. Otherwise , $x_\text{i3}$ is equal to 0.
+* $x_\text{i4}$(seslow): If "ses" is "low", $x_\text{i4}$ is equal to 1. Otherwise , $x_\text{i4}$ is equal to 0.
+* $x_\text{i5}$(sesmid): If "ses" is "mid", $x_\text{i5}$ is equal to 1. Otherwise , $x_\text{i5}$ is equal to 0.
+
+* $\hat\beta_0$: Intercept
+* $\hat\beta_1$: Coefficient of $x_\text{i1}$(age)
+* $\hat\beta_2$: Coefficient of $x_\text{i2}$(malfunctionTRUE)
+* $\hat\beta_3$: Coefficient of $x_\text{i3}$(multi_purchTRUE)
+* $\hat\beta_4$: Coefficient of $x_\text{i4}$(seslow)
+* $\hat\beta_5$: Coefficient of $x_\text{i5}$(sesmid)
+* $\hat\beta_6$: Coefficient of interaction term between $x_\text{i1}$(age) and $x_\text{i2}$(malfunctionTRUE)
+* $\hat\beta_7$: Coefficient of interaction term between $x_\text{i3}$(multi_purchTRUE) and $x_\text{i4}$(seslow)
+* $\hat\beta_8$: Coefficient of interaction term between $x_\text{i3}$(multi_purchTRUE) and $x_\text{i5}$(sesmid)
+
+# Q13. The line of the final model
+## Q13(a). How many lines does your final model describe?
+Values of interaction term depend on individual terms. Therefore the number of lines is counted based on individual categorical terms.
+The "malfunctionTRUE" and "multi_purchTRUE" have binary values, and while "seslow" and "sesmid" are based on "ses", thus resulting in three possible combinations of values, "low", "mid" and "high". Therefore, the number of lines is $2^2 \times 3 = 12$.
+
+
+## Q13(b). Are the lines all parallel?
+No. One interaction term includes countinuous variable, $x_\text{i1}$ ("age"). Therefore, the lines are not all parallel.
+For example, suppose there are two lines, $\hat y_0$ and $\hat y_1$. $\hat y_0$ corresponds to $x_2$ ("malfunctionTRUE") being 0, while $\hat y_1$ corresponds to $x_2$ being 1. To think simply, The values of other categorical terms are assumed to be 0. From the equation in Q12, $\hat y_1 - \hat y_0$ becomes as follows.
+$$\hat y_0 = \hat\beta_0 + \hat\beta_1  x_\text{i1}$$
+$$\hat y_1 = \hat\beta_0 + \hat\beta_1  x_\text{i1} + \hat\beta_2 + \hat\beta_6  x_\text{i1}$$
+$$\hat y_1 - \hat y_0 = \hat\beta_2 + \hat\beta_6  x_\text{i1}$$
+From the above example, some lines are not parallel.
+
+
+* $\hat y_0$: Estimated function of the predictors where all categorical terms are 0
+* $\hat y_1$: Estimated function of the predictors where $x_2$ ("malfunctionTRUE") is eqaul to 1 and the rest of the other categorical terms are 0
+
+* $x_\text{i1}$: "age"
+* $x_\text{i2}$(malfunctionTRUE): If "malfunction" is TRUE, $x_\text{i2}$ is equal to 1. Otherwise , $x_\text{i2}$ is equal to 0. However $x_\text{i2}$ is treated as 0 or 1 in Q13(b)
+
+* $\hat\beta_0$: Intercept
+* $\hat\beta_1$: Coefficient of $x_\text{i1}$(age)
+* $\hat\beta_2$: Coefficient of $x_\text{i2}$(malfunctionTRUE)
+* $\hat\beta_6$: Coefficient of interaction term between $x_\text{i1}$(age) and $x_\text{i2}$(malfunctionTRUE)
+
+
+# Q14. Output the summary of the final model and write log-odds with all the estimated coefficients
+
+```{r}
+# Output the summary of the final model
+summary(survey_lr_10b_2$fit)
+```
+$$
+ \hat{f}_i = 0.0595 - 0.0511  x_\text{i1} - 2.41 x_\text{i2} + 3.00 x_\text{i3} + 0.163 x_\text{i4} - 0.0256 x_\text{i5} - 0.122 x_\text{i1} x_\text{i2} + 0.528 x_\text{i3} x_\text{i4} + 0.0622 x_\text{i3} x_\text{i5}
+$$
+
+* $\hat{f}_i$: Estimated function of the predictors
+
+* $x_\text{i1}$: "age"
+
+* $x_\text{i2}$(malfunctionTRUE): If "malfunction" is TRUE, $x_\text{i2}$ is equal to 1. Otherwise , $x_\text{i2}$ is equal to 0.
+
+* $x_\text{i3}$(multi_purchTRUE): If "multi_purch" is TRUE, $x_\text{i3}$ is equal to 1. Otherwise , $x_\text{i3}$ is equal to 0.
+
+* $x_\text{i4}$(seslow): If "ses" is "low", $x_\text{i4}$ is equal to 1. Otherwise , $x_\text{i4}$ is equal to 0.
+
+* $x_\text{i5}$(sesmid): If "ses" is "mid", $x_\text{i5}$ is equal to 1. Otherwise , $x_\text{i5}$ is equal to 0.
+
+
+# Q15. What is the estimate for the log-odds for a respondent?
+## Q15(a). who has a low Socio-Economic Status, yet purchased several Gadgets and none of them stopped working?
+```{r}
+q15a_coef = survey_lr_10b_2$fit$coefficients
+
+# Calculate total number of the intercept
+q15a_coef["(Intercept)"] +
+q15a_coef["malfunctionTRUE"]*0 +
+q15a_coef["multi_purchTRUE"]*1 +
+q15a_coef["seslow"]*1 +
+q15a_coef["sesmid"]*0 +
+q15a_coef["multi_purchTRUE:seslow"]*1*1 +
+q15a_coef["multi_purchTRUE:sesmid"]*1*0
+
+# Calculate the slope of the age
+q15a_coef["age"] + q15a_coef["age:malfunctionTRUE"]*0
+```
+$$
+ \hat{f}_i = 3.75 - 0.0511  x_\text{i1} 
+$$
+
+* $\hat{f}_i$: Estimated function of the predictors
+
+* $x_\text{i1}$: "age"
+
+
+## Q15(b). Who has a mid-range Socio-Economic Status, only purchased a single Gadget and it broke?
+```{r}
+q15b_coef = survey_lr_10b_2$fit$coefficients
+
+# Calculate total number of the intercept
+q15b_coef["(Intercept)"] +
+q15b_coef["malfunctionTRUE"]*1 +
+q15b_coef["multi_purchTRUE"]*0 +
+q15b_coef["seslow"]*0 +
+q15b_coef["sesmid"]*1 +
+q15b_coef["multi_purchTRUE:seslow"]*0*0 +
+q15b_coef["multi_purchTRUE:sesmid"]*0*1
+
+
+# Calculate total number of the slope
+q15b_coef["age"]+q15b_coef["age:malfunctionTRUE"]*1
+```
+$$
+ \hat{f}_i = -2.38 - 0.173  x_\text{i1}
+$$
+
+* $\hat{f}_i$: Estimated function of the predictors
+
+* $x_\text{i1}$: "age"
+
+# Q16. Apply your final model to the testing data
+```{r}
+# prediction probabilities.
+prediction16 <- predict(survey_lr_10b_2,survey_test,  type= "prob")  
+
+prediction16 <- prediction16 %>%
+  cbind(predict(survey_lr_10b_2,survey_test,  type= "class")  ) %>%
+  as.tibble()
+
+# Output the first 10 lines
+print(n=10,prediction16)
+```
+
+
+# Q17. Evaluate our model
+## Q17(a). Find the confusion matrix.
+```{r}
+prediction17<-prediction16
+prediction17$ground_truth <- survey_test$recommend
+
+prediction17 %>%
+  conf_mat( truth = ground_truth, estimate = .pred_class )
+
+```
+
+## Q17(b). If leaving a review is classified as a success, find the sensitivity and specificity of our model.
+```{r}
+# Display sensitivity
+sensitivity <- 6597  / (6597 + 502)
+sensitivity
+```
+```{r}
+# Display specificity
+specificity <- 1936 / (1936 + 965)
+specificity
+```
+
+## Q17(c). Plot the ROC curve.
+```{r}
+prediction17 %>% 
+  roc_curve(.pred_no, truth = ground_truth) %>% 
+  autoplot() 
+```
+
+## Q17(d). What is the AUC of this ROC curve?
+```{r}
+prediction17 %>%
+  roc_auc(.pred_no, truth = ground_truth)
+```
+
+# Q18. Predict that the Mayor will recommend the Gadget2?
+To summarise the mayor's information, His age is 45. Guessing from wearing a jacket with the company’s logo on it, he knows the name of the company.
+Also, He purchased more than one Gadget and don't have any Gadgets® malfunctioned. Futhermore, his Socio-Economic Status is high, and He is an active social media user.
+```{r}
+mayor_data  <- 
+  tibble(
+    age  = 45,
+    company_aware = TRUE,
+    malfunction = FALSE,
+    multi_purch = TRUE,
+    ses = "high",
+    social_media = TRUE
+  )
+
+predict(survey_lr_10b_2,mayor_data,  type= "prob")
+```
+
+Based on the mayor's information and the prediction, the mayor recommends Gadget 2® with a probability of 68.1%.
